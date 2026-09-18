@@ -1,0 +1,9 @@
+node_modules/
+
+firebaseConfig.js
+firestore.rules
+
+# 시공사 지도 분포 팝업(§지도 분포 라운드): 카카오맵 JavaScript 키는 절대 커밋하지 않는다.
+# kakaoMapConfig.example.js(형식 예시)는 커밋하되, 실제 키가 든 kakaoMapConfig.js는
+# 커밋하지 않는다 — 저장소 루트에 이 파일을 직접 만들어서 넣어야 한다.
+kakaoMapConfig.js

@@ -1,0 +1,104 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 시공사 지도 분포 팝업: 카카오맵 JavaScript 키는 저장소에 절대 커밋하지 않는다
+      # (kakaoMapConfig.js는 .gitignore 대상). 대신 이 빌드 단계에서만 GitHub Secrets의
+      # KAKAO_MAP_JS_KEY 값으로 kakaoMapConfig.js를 생성해 배포 아티팩트에만 포함시킨다.
+      # 카카오 지도 분포 팝업은 이 CRM의 핵심 기능이 아니므로, 시크릿이 비어 있어도
+      # 배포 자체를 막지 않는다 — ::warning::만 남기고 kakaoMapConfig.js 생성을
+      # 건너뛴 채 나머지 배포를 계속 진행한다. 가짜/임시 키를 만들어 넣지 않는다.
+      # 로그에 키 값 자체가 남지 않도록 echo로 값을 직접 출력하지 않는다.
+      - name: Generate kakaoMapConfig.js from secret (배포 아티팩트 전용, 저장소에는 커밋 안 됨)
+        env:
+          KAKAO_MAP_JS_KEY: ${{ secrets.KAKAO_MAP_JS_KEY }}
+        run: |
+          if [ -z "$KAKAO_MAP_JS_KEY" ]; then
+            echo "::warning::KAKAO_MAP_JS_KEY 저장소 시크릿이 비어 있어 kakaoMapConfig.js 생성을 건너뜁니다."
+            echo "::warning::지도 분포 팝업 기능만 비활성화된 채로 나머지 배포는 계속 진행합니다."
+            echo "::warning::필요하다면 Settings → Secrets and variables → Actions → Repository secrets 에서"
+            echo "::warning::이름이 정확히 KAKAO_MAP_JS_KEY 인지, 이 저장소(tazan0068/customer-card)에 등록됐는지 확인해주세요."
+            exit 0
+          fi
+          node -e "
+            const key = JSON.stringify(process.env.KAKAO_MAP_JS_KEY);
+            const fs = require('fs');
+            fs.writeFileSync('kakaoMapConfig.js',
+              'window.SHIN2_KAKAO_MAP_CONFIG = {\n  javascriptKey: ' + key + '\n};\n');
+          "
+          # 키 값 자체는 절대 출력하지 않는다 — 파일이 생성됐다는 사실과, 그 안의
+          # 전역 변수명이 index.html이 실제로 읽는 이름과 일치하는지 구조만 확인한다.
+          test -f kakaoMapConfig.js && echo "kakaoMapConfig.js generated: OK (파일 존재 확인, 키 값은 출력 안 함)"
+          if grep -q "window.SHIN2_KAKAO_MAP_CONFIG" kakaoMapConfig.js && grep -q "javascriptKey" kakaoMapConfig.js; then
+            echo "kakaoMapConfig.js format check: OK (window.SHIN2_KAKAO_MAP_CONFIG.javascriptKey 존재)"
+          else
+            echo "::error::kakaoMapConfig.js 형식이 index.html이 기대하는 전역 변수명과 다릅니다."
+            exit 1
+          fi
+      # Firebase 연동 설정은 이 CRM의 핵심 기능이므로(카카오 지도와 달리), 시크릿이
+      # 없거나 형식이 잘못되면 조용히 배포하지 않고 배포 자체를 실패시킨다.
+      # FIREBASE_CONFIG_JSON 시크릿(JSON 문자열)을 읽어 firebaseConfig.js를 생성하며,
+      # 이 파일은 배포 아티팩트에만 포함되고 저장소에는 커밋되지 않는다.
+      - name: Generate firebaseConfig.js from secret (배포 아티팩트 전용, 저장소에는 커밋 안 됨)
+        env:
+          FIREBASE_CONFIG_JSON: ${{ secrets.FIREBASE_CONFIG_JSON }}
+        run: |
+          if [ -z "$FIREBASE_CONFIG_JSON" ]; then
+            echo "::error::FIREBASE_CONFIG_JSON 저장소 시크릿이 비어 있거나 이 워크플로에 전달되지 않았습니다."
+            echo "::error::Settings → Secrets and variables → Actions → Repository secrets 에서"
+            echo "::error::이름이 정확히 FIREBASE_CONFIG_JSON 인지, 이 저장소(tazan0068/customer-card)에 등록됐는지 확인해주세요."
+            exit 1
+          fi
+          node -e "
+            const required = ['apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId'];
+            let cfg;
+            try {
+              cfg = JSON.parse(process.env.FIREBASE_CONFIG_JSON);
+            } catch (e) {
+              console.error('::error::FIREBASE_CONFIG_JSON이 올바른 JSON 형식이 아닙니다: ' + e.message);
+              process.exit(1);
+            }
+            const missing = required.filter((k) => !cfg[k]);
+            if (missing.length > 0) {
+              console.error('::error::FIREBASE_CONFIG_JSON에 다음 필드가 없습니다: ' + missing.join(', '));
+              process.exit(1);
+            }
+            const fs = require('fs');
+            const lines = required.map((k) => '  ' + k + ': ' + JSON.stringify(cfg[k])).join(',\n');
+            fs.writeFileSync('firebaseConfig.js', 'window.FIREBASE_CONFIG = {\n' + lines + '\n};\n');
+          "
+          # 키 값 자체는 절대 출력하지 않는다 — 파일이 생성됐다는 사실과, 그 안의
+          # 전역 변수명이 index.html이 실제로 읽는 이름과 일치하는지 구조만 확인한다.
+          test -f firebaseConfig.js && echo "firebaseConfig.js generated: OK (파일 존재 확인, 값은 출력 안 함)"
+          if grep -q "window.FIREBASE_CONFIG" firebaseConfig.js; then
+            echo "firebaseConfig.js format check: OK (window.FIREBASE_CONFIG 존재)"
+          else
+            echo "::error::firebaseConfig.js 형식이 index.html이 기대하는 전역 변수명과 다릅니다."
+            exit 1
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+      - id: deployment
+        uses: actions/deploy-pages@v4
